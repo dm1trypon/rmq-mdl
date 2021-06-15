@@ -1,0 +1,2 @@
+# rmq-mdl
+RabbitMQ module
