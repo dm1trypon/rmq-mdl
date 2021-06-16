@@ -1,6 +1,9 @@
 package main
 
 import (
+	"fmt"
+	"time"
+
 	logger "github.com/dm1trypon/easy-logger"
 	"github.com/dm1trypon/rmq-mdl/rmqconnector"
 )
@@ -22,12 +25,13 @@ func main() {
 	rmqConn := new(rmqconnector.RMQConnector).Create()
 
 	cfg := rmqconnector.Config{
-		Username: "guest",
-		Password: "guest",
-		Host:     "127.0.0.1",
-		Port:     5672,
-		TLS:      false,
-		Certs:    rmqconnector.Certs{},
+		Username:             "guest",
+		Password:             "guest",
+		Host:                 "127.0.0.1",
+		Port:                 5672,
+		TLS:                  true,
+		ReconnectionInterval: time.Duration(2 * time.Second),
+		Certs:                rmqconnector.Certs{},
 		Events: []rmqconnector.Event{
 			{
 				Kind:     "logic",
@@ -50,7 +54,8 @@ func main() {
 	rmqConn.SetConfig(cfg)
 	go rmqConn.Run()
 
-	<-rmqConn.GetChStopService()
-
-	logger.InfoJ(LC, "STOPING SERVICE")
+	for {
+		msg := <-rmqConn.GetChNextMsg()
+		logger.DebugJ(LC, fmt.Sprint("[", msg.Kind, "] RECV: ", msg.Body))
+	}
 }

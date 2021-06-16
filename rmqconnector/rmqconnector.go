@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"sync"
 	"time"
 
 	logger "github.com/dm1trypon/easy-logger"
@@ -15,24 +14,30 @@ import (
 	"vcs.bingo-boom.ru/offline/application/v1/event-v1-to-v3/servicedata"
 )
 
+// Protocols
 const (
 	ProtoInsecure = "amqp"
 	ProtoSecure   = "amqps"
 )
 
+// Create <*RMQConnector> - constructor of module RMQConnector
+//
+// Returns:
+// 	1. <*RMQConnector>
+// - pointer of object
 func (r *RMQConnector) Create() *RMQConnector {
 	r = &RMQConnector{
-		lc:            "RMQ_CONNECTOR",
-		conn:          nil,
-		internalErr:   nil,
-		chStopService: make(chan bool, 1),
-		mutex:         &sync.Mutex{},
+		lc:        "RMQ_CONNECTOR",
+		conn:      nil,
+		chErr:     nil,
+		chNextMsg: make(chan Msg),
 		config: Config{
-			Username: "user",
-			Password: "password",
-			Host:     "localhost",
-			Port:     15672,
-			TLS:      false,
+			Username:             "user",
+			Password:             "password",
+			Host:                 "localhost",
+			Port:                 15672,
+			TLS:                  false,
+			ReconnectionInterval: time.Second,
 			Certs: Certs{
 				InsecureSkipVerify: true,
 				Srcs: Srcs{
@@ -54,21 +59,35 @@ func (r *RMQConnector) Create() *RMQConnector {
 	return r
 }
 
+// listenerHandler <*RMQConnector> - handler on new meesages from RMQListener
 func (r *RMQConnector) listenerHandler() {
 	for kind, listener := range r.listeners {
-		go func(kind string, listener *rmqlistener.RMQListener) {
-			for {
-				msg, ok := <-listener.GetMsgChan()
-				if !ok {
-					break
-				}
-
-				logger.DebugJ(r.lc, fmt.Sprint("[", kind, "] RECV: ", msg))
-			}
-		}(kind, listener)
+		go r.nextMessage(kind, listener)
 	}
 }
 
+// Create <*RMQConnector> - constructor of module RMQConnector
+//
+// Args:
+// 	1. kind <string>
+// - kind of buisnes logic
+// 	2. listener <*rmqlistener.RMQListener>
+// - listener of RMQ module
+func (r *RMQConnector) nextMessage(kind string, listener *rmqlistener.RMQListener) {
+	for {
+		msg, ok := <-listener.GetChNextMsg()
+		if !ok {
+			break
+		}
+
+		r.chNextMsg <- Msg{
+			Kind: kind,
+			Body: msg,
+		}
+	}
+}
+
+// setListeners <*RMQConnector> - creates listeners for RMQ module
 func (r *RMQConnector) setListeners() {
 	r.listeners = map[string]*rmqlistener.RMQListener{}
 
@@ -77,19 +96,29 @@ func (r *RMQConnector) setListeners() {
 	}
 }
 
-/*
-GetChStopService <RMQConnector> - getting the service stop event channel
-	Returns <<-chan bool>:
-		1. event's channel
-*/
-func (r *RMQConnector) GetChStopService() <-chan bool {
-	return r.chStopService
+// GetChNextMsg <*RMQConnector> - gets channel of incoming messages
+//
+// Returns:
+// 	1. <<-chan Msg>
+// - receive message channel
+func (r *RMQConnector) GetChNextMsg() <-chan Msg {
+	return r.chNextMsg
 }
 
+// SetConfig <*RMQConnector> - sets RMQ settings
+//
+// Args:
+// 	1. config <Config>
+// - settings object for RMQ module
 func (r *RMQConnector) SetConfig(config Config) {
 	r.config = config
 }
 
+// RunOnce <*RMQConnector> - runs the logic for connecting to RMQ once
+//
+// Returns:
+// 	1. <bool>
+// - completion status
 func (r *RMQConnector) RunOnce() bool {
 	rmqURL := fmt.Sprint("://", r.config.Username, ":", r.config.Password, "@", r.config.Host, ":", r.config.Port)
 
@@ -98,21 +127,23 @@ func (r *RMQConnector) RunOnce() bool {
 	if r.config.TLS {
 		cfg := r.setTLS()
 		if cfg == nil {
-			return false
-		}
+			logger.WarningJ(r.lc, fmt.Sprint("TLS connection is not possible, unsecured connection is used"))
+			r.config.TLS = false
+		} else {
+			rmqURL = fmt.Sprint(ProtoSecure, rmqURL)
+			logger.DebugJ(r.lc, fmt.Sprint("Connecting to ", rmqURL))
+			r.conn, err = amqp.DialTLS(rmqURL, cfg)
+			if err != nil {
+				logger.ErrorJ(r.lc, fmt.Sprint("Failed connect to RMQ with TLS: ", err.Error()))
+				return false
+			}
 
-		rmqURL = fmt.Sprint(ProtoSecure, rmqURL)
-		r.conn, err = amqp.DialTLS(rmqURL, cfg)
-		if err != nil {
-			logger.ErrorJ(r.lc, fmt.Sprint("Failed connect to RMQ with TLS: ", err.Error()))
-			return false
+			return true
 		}
-
-		return true
 	}
 
 	rmqURL = fmt.Sprint(ProtoInsecure, rmqURL)
-
+	logger.DebugJ(r.lc, fmt.Sprint("Connecting to ", rmqURL))
 	r.conn, err = amqp.Dial(rmqURL)
 	if err != nil {
 		logger.ErrorJ(r.lc, fmt.Sprint("Failed connect to RMQ: ", err.Error()))
@@ -134,10 +165,11 @@ func (r *RMQConnector) RunOnce() bool {
 	return true
 }
 
+// Run <*RMQConnector> - runs the logic for looping connections to the RMQ in case of errors
 func (r *RMQConnector) Run() {
 	for {
 		if !r.RunOnce() {
-			time.Sleep(time.Second)
+			time.Sleep(r.config.ReconnectionInterval)
 			continue
 		}
 
@@ -145,9 +177,10 @@ func (r *RMQConnector) Run() {
 	}
 }
 
+// errorHandler <*RMQConnector> - handler for error connection to RMQ server
 func (r *RMQConnector) errorHandler() {
-	r.internalErr = make(chan *amqp.Error)
-	notify := r.conn.NotifyClose(r.internalErr)
+	r.chErr = make(chan *amqp.Error)
+	notify := r.conn.NotifyClose(r.chErr)
 	err := <-notify
 
 	if err == nil {
@@ -157,15 +190,16 @@ func (r *RMQConnector) errorHandler() {
 	logger.ErrorJ(r.lc, fmt.Sprint("An occured error in RMQ connecting, description: [CODE][",
 		err.Code, "] [REASON][", err.Reason, "]"))
 
-	if !r.conn.IsClosed() {
-		r.conn.Close()
-		r.conn = nil
-	}
+	r.conn.Close()
 
 	r.Run()
 }
 
-// setTLS - setting up secure connection to RMQ
+// setTLS <*RMQConnector> - setting up secure connection to RMQ
+//
+// Returns:
+// 	1. <*tls.Config>
+// - pointer of TLS config object
 func (r *RMQConnector) setTLS() *tls.Config {
 	if len(r.config.Certs.Srcs.CA) > 0 &&
 		len(r.config.Certs.Srcs.SrvCert) > 0 &&
@@ -178,8 +212,11 @@ func (r *RMQConnector) setTLS() *tls.Config {
 	return r.configuring()
 }
 
-// makeCerts - creates certificates and key by env value.
-// Returns <bool>. True - is ok.
+// makeCerts <*RMQConnector> - creates certificates and key by env value
+//
+// Returns:
+// 	1. <bool>
+// - completion status
 func (r *RMQConnector) makeCerts() bool {
 	var certs = map[string][]byte{
 		r.config.Certs.Paths.CA:      r.config.Certs.Srcs.CA,
@@ -208,8 +245,11 @@ func (r *RMQConnector) makeCerts() bool {
 	return true
 }
 
-// configuring - configures a TLS connection using certificates and keys located by path.
-// Returns <bool>. True - is ok.
+// configuring <*RMQConnector> - configures a TLS connection using certificates and keys located by path
+//
+// Returns:
+// 	1. <bool>
+// - completion status
 func (r *RMQConnector) configuring() *tls.Config {
 	cfg := &tls.Config{
 		Rand:                        nil,
