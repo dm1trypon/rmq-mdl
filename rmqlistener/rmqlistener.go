@@ -60,18 +60,18 @@ func (r *RMQListener) Subscribe() {
 
 	r.amqpQueue, err = r.amqpChannel.QueueDeclare(r.queue, true, false, false, false, nil)
 	if err != nil {
-		logger.ErrorJ(r.lc, fmt.Sprint(r.lMask, "ErrorJ queue declaring: ", err.Error()))
+		logger.ErrorJ(r.lc, fmt.Sprint(r.lMask, "Error queue declaring: ", err.Error()))
 		return
 	}
 
 	if err := r.amqpChannel.QueueBind(r.queue, "", r.exchange, false, nil); err != nil {
-		logger.ErrorJ(r.lc, fmt.Sprint(r.lMask, "ErrorJ binding the queue: ", err.Error()))
+		logger.ErrorJ(r.lc, fmt.Sprint(r.lMask, "Error binding the queue: ", err.Error()))
 		return
 	}
 
 	r.amqpDelivery, err = r.amqpChannel.Consume(r.queue, "", false, false, false, false, nil)
 	if err != nil {
-		logger.ErrorJ(r.lc, fmt.Sprint(r.lMask, "ErrorJ consuming the queue: ", err.Error()))
+		logger.ErrorJ(r.lc, fmt.Sprint(r.lMask, "Error consuming the queue: ", err.Error()))
 		return
 	}
 

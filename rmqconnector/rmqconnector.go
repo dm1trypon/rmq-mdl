@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"path/filepath"
 	"time"
 
 	logger "github.com/dm1trypon/easy-logger"
@@ -218,6 +219,11 @@ func (r *RMQConnector) setTLS() *tls.Config {
 // 	1. <bool>
 // - completion status
 func (r *RMQConnector) makeCerts() bool {
+	if err := os.MkdirAll(filepath.Dir(r.config.Certs.Paths.CA), os.ModePerm); err != nil {
+		logger.Error(r.lc, fmt.Sprint("Failed to create ssl directory: ", err.Error()))
+		return false
+	}
+
 	var certs = map[string][]byte{
 		r.config.Certs.Paths.CA:      r.config.Certs.Srcs.CA,
 		r.config.Certs.Paths.SrvCert: r.config.Certs.Srcs.SrvCert,
