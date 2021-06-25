@@ -1,6 +1,8 @@
 package rmqlistener
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 
 	logger "github.com/dm1trypon/easy-logger"
@@ -12,7 +14,7 @@ import (
 // Returns:
 // 	1. <*RMQListener>
 // - pointer of object
-func (r *RMQListener) Create(exchange, queue string, conn *amqp.Connection) *RMQListener {
+func (r *RMQListener) Create(exchange, queue string, config Config, conn *amqp.Connection) *RMQListener {
 	r = &RMQListener{
 		lc:           "RMQ_LISTENER",
 		lMask:        fmt.Sprint("[", exchange, ":", queue, "] "),
@@ -23,13 +25,27 @@ func (r *RMQListener) Create(exchange, queue string, conn *amqp.Connection) *RMQ
 		amqpQueue:    amqp.Queue{},
 		amqpChannel:  nil,
 		msgChan:      make(chan string),
+		config:       config,
 	}
 
 	return r
 }
 
+// GetConfig <*RMQListener> - getting settings of listener
+//
+// Returns:
+// 	1. <Config>
+// - settings of listener
+func (r *RMQListener) GetConfig() Config {
+	return r.config
+}
+
 // Subscribe <*RMQListener> - subscribing on events
-func (r *RMQListener) Subscribe() {
+//
+// Args:
+// 	1. consume <bool>
+// - enable consuming
+func (r *RMQListener) Subscribe(consume bool) {
 	logger.InfoJ(r.lc, fmt.Sprint(r.lMask, "Subscribing"))
 
 	var err error
@@ -55,6 +71,10 @@ func (r *RMQListener) Subscribe() {
 		false,
 		nil); err != nil {
 		logger.ErrorJ(r.lc, fmt.Sprint(r.lMask, "Can not declare exchange: ", err.Error()))
+		return
+	}
+
+	if !consume {
 		return
 	}
 
@@ -99,7 +119,7 @@ func (r *RMQListener) GetChNextMsg() <-chan string {
 // 	1. <bool>
 // - completion status
 func (r *RMQListener) Publish(body []byte, contentType string) bool {
-	if !r.hasConnection() || r.amqpChannel == nil {
+	if !r.hasConnection() {
 		logger.ErrorJ(r.lc, fmt.Sprint(r.lMask, "Publishing is failed, RMQ connection is closed"))
 		return false
 	}
@@ -111,7 +131,14 @@ func (r *RMQListener) Publish(body []byte, contentType string) bool {
 
 	logger.DebugJ(r.lc, fmt.Sprint(r.lMask, "Publishing message: ", string(body)))
 
-	if err := r.amqpChannel.Publish(r.exchange, "", false, false, pubData); err != nil {
+	amqpChannel, err := r.conn.Channel()
+	if err != nil {
+		logger.ErrorJ(r.lc, fmt.Sprint(r.lMask, "Could not open RMQ channel: ", err.Error()))
+		return false
+	}
+	defer amqpChannel.Close()
+
+	if err := amqpChannel.Publish(r.exchange, "", false, false, pubData); err != nil {
 		logger.ErrorJ(r.lc, fmt.Sprint(r.lMask, "An error occurred while posting: ", err.Error()))
 		return false
 	}
@@ -129,9 +156,19 @@ func (r *RMQListener) consumer() {
 				return
 			}
 
-			logger.DebugJ(r.lc, fmt.Sprint(r.lMask, "Imcoming message: ", string(msg.Body)))
-			r.msgChan <- string(msg.Body)
+			var body []byte
+
+			compactMsg := new(bytes.Buffer)
+			err := json.Compact(compactMsg, msg.Body)
+			if err != nil {
+				body = msg.Body
+			} else {
+				body = compactMsg.Bytes()
+			}
+
+			logger.DebugJ(r.lc, fmt.Sprint(r.lMask, "Imcoming message: ", string(body)))
 			msg.Ack(true)
+			r.msgChan <- string(body)
 		}
 	}
 }

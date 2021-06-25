@@ -9,12 +9,14 @@ import (
 
 // RMQConnector - main data of RMQConnector module
 type RMQConnector struct {
-	lc        string                              // logging category
-	conn      *amqp.Connection                    // RMQ connection
-	chErr     chan *amqp.Error                    // channel of RMQ connection error
-	chNextMsg chan Msg                            // channel of RMQ next message
-	config    Config                              // RMQ settings
-	listeners map[string]*rmqlistener.RMQListener // list of RMQ listeners
+	lc             string                              // logging category
+	conn           *amqp.Connection                    // RMQ connection
+	chErr          chan *amqp.Error                    // channel of RMQ connection error
+	chNextMsg      chan Msg                            // channel of RMQ next message
+	config         Config                              // RMQ settings
+	listeners      map[string]*rmqlistener.RMQListener // list of RMQ listeners
+	chConnected    chan bool                           // channel for connect events
+	chDisconnected chan bool                           // channel for disconnect events
 }
 
 // Config - RMQ settings
@@ -31,9 +33,10 @@ type Config struct {
 
 // Event - data for RMQ listener
 type Event struct {
-	Kind     string // kind of business logic
-	Exchange string // exchange
-	Queue    string // queue
+	Consuming bool   // enable or disable consuming
+	Kind      string // kind of business logic
+	Exchange  string // exchange
+	Queue     string // queue
 }
 
 // Certs - data of Certificates, needed for TLS connection

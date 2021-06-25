@@ -28,10 +28,12 @@ const (
 // - pointer of object
 func (r *RMQConnector) Create() *RMQConnector {
 	r = &RMQConnector{
-		lc:        "RMQ_CONNECTOR",
-		conn:      nil,
-		chErr:     nil,
-		chNextMsg: make(chan Msg),
+		lc:             "RMQ_CONNECTOR",
+		conn:           nil,
+		chErr:          nil,
+		chNextMsg:      make(chan Msg),
+		chConnected:    make(chan bool),
+		chDisconnected: make(chan bool),
 		config: Config{
 			Username:             "user",
 			Password:             "password",
@@ -58,6 +60,47 @@ func (r *RMQConnector) Create() *RMQConnector {
 	}
 
 	return r
+}
+
+// GetChConnected <*RMQConnector> - gets channel of connection events
+//
+// Returns:
+// 	1. <<-chan bool>
+// - receive connection events channel
+func (r *RMQConnector) GetChConnected() <-chan bool {
+	return r.chConnected
+}
+
+// GetChDisconnected <*RMQConnector> - gets channel of disconnection events
+//
+// Returns:
+// 	1. <<-chan bool>
+// - receive disconnection events channel
+func (r *RMQConnector) GetChDisconnected() <-chan bool {
+	return r.chDisconnected
+}
+
+// Publish <*RMQConnector> - publish message by kind of buisnes logic
+//
+// Args:
+//	1.body <[]byte>
+// - body of message
+// 	2. kind <string>
+// - kind of buisnes logic
+// 	3. contentType <string>
+// - content type of body
+//
+// Returns:
+// 	1. <bool>
+// - completion status
+func (r *RMQConnector) Publish(body []byte, kind, contentType string) bool {
+	for key, listener := range r.listeners {
+		if key == kind {
+			return listener.Publish(body, contentType)
+		}
+	}
+
+	return false
 }
 
 // listenerHandler <*RMQConnector> - handler on new meesages from RMQListener
@@ -93,7 +136,11 @@ func (r *RMQConnector) setListeners() {
 	r.listeners = map[string]*rmqlistener.RMQListener{}
 
 	for _, event := range r.config.Events {
-		r.listeners[event.Kind] = new(rmqlistener.RMQListener).Create(event.Exchange, event.Queue, r.conn)
+		config := rmqlistener.Config{
+			Consuming: event.Consuming,
+		}
+
+		r.listeners[event.Kind] = new(rmqlistener.RMQListener).Create(event.Exchange, event.Queue, config, r.conn)
 	}
 }
 
@@ -139,6 +186,11 @@ func (r *RMQConnector) RunOnce() bool {
 				return false
 			}
 
+			logger.InfoJ(r.lc, "Connected")
+
+			go r.listenerHandler()
+
+			r.chConnected <- true
 			return true
 		}
 	}
@@ -158,11 +210,14 @@ func (r *RMQConnector) RunOnce() bool {
 	r.setListeners()
 
 	for _, listener := range r.listeners {
-		go listener.Subscribe()
+		cfg := listener.GetConfig()
+
+		go listener.Subscribe(cfg.Consuming)
 	}
 
-	r.listenerHandler()
+	go r.listenerHandler()
 
+	r.chConnected <- true
 	return true
 }
 
@@ -191,8 +246,11 @@ func (r *RMQConnector) errorHandler() {
 	logger.ErrorJ(r.lc, fmt.Sprint("An occured error in RMQ connecting, description: [CODE][",
 		err.Code, "] [REASON][", err.Reason, "]"))
 
-	r.conn.Close()
+	if err := r.conn.Close(); err != nil {
+		logger.ErrorJ(r.lc, fmt.Sprint("Closing connection error: ", err.Error()))
+	}
 
+	r.chDisconnected <- true
 	r.Run()
 }
 

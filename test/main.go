@@ -53,6 +53,7 @@ func main() {
 
 	rmqConn.SetConfig(cfg)
 	go rmqConn.Run()
+	<-rmqConn.GetChConnected()
 
 	for {
 		msg := <-rmqConn.GetChNextMsg()
